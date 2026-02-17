@@ -6,20 +6,18 @@ from torchvision import datasets, transforms
 from torch.utils.data import DataLoader
 import torch.nn.functional as F
 from vae_model import ConvVAE  # your VAE class
+from torch.utils.data import Dataset
+from PIL import Image
+import glob
 
 # ================= PATH SETUP =================
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))   # week4/Model
-PROJECT_ROOT = os.path.abspath(os.path.join(BASE_DIR, ".."))  # week4
-IMG_ROOT = os.path.join(PROJECT_ROOT, "Data", "dataset_images")
+IMG_ROOT = r"C:\Users\JC\Desktop\Thesis\week4\Data\Images"
+MODEL_PATH = r"week4\vae_trained.pth"
+OUT_CSV = r"week4/Data/vae_recon_scores.csv"
+
 print("Using IMG_ROOT:", IMG_ROOT)
 print("Exists?", os.path.exists(IMG_ROOT))
 # ============================================
-
-# -------- paths --------
-MODEL_PATH = os.path.join(PROJECT_ROOT, "vae_trained.pth")  # change if needed
-OUT_CSV    = os.path.join(PROJECT_ROOT, "Data", "vae_recon_scores.csv")      # category subfolders
-OUT_CSV = os.path.join(PROJECT_ROOT, "Data", "vae_recon_scores.csv")
-
 
 # -------- settings --------
 BATCH_SIZE = 32
@@ -28,12 +26,30 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 transform = transforms.Compose([
     transforms.ToTensor(),  # assumes images already 224x224
 ])
+class FlatImageDataset(Dataset):
+    def __init__(self, root, transform=None):
+        self.paths = glob.glob(os.path.join(root, "*.jpg"))
+        self.transform = transform
 
-dataset = datasets.ImageFolder(root=IMG_ROOT, transform=transform)
+    def __len__(self):
+        return len(self.paths)
+
+    def __getitem__(self, idx):
+        path = self.paths[idx]
+        img = Image.open(path).convert("RGB")
+
+        if self.transform:
+            img = self.transform(img)
+
+        return img, path
+
+
+dataset = FlatImageDataset(IMG_ROOT, transform)
 loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=0)
 
+
 # Get file paths in exact order as ImageFolder outputs
-all_paths = [p for (p, _) in dataset.samples]
+all_paths = dataset.paths
 
 model = ConvVAE().to(DEVICE)
 state = torch.load(MODEL_PATH, map_location=DEVICE)

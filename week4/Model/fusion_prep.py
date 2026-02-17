@@ -1,74 +1,93 @@
+# week4/Model/fusion_prep.py
+
 import os
 import pandas as pd
 import torch
-import numpy as np
 
-# ---------- PATHS (anchored to project root) ----------
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))          # week4/Model
-PROJECT_ROOT = os.path.abspath(os.path.join(BASE_DIR, ".."))   # week4
+# ================= PATHS =================
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.abspath(os.path.join(BASE_DIR, ".."))
 
-SCORES_CSV  = os.path.join(PROJECT_ROOT, "Data", "vae_recon_scores.csv")
-ALIGNED_CSV = os.path.join(PROJECT_ROOT, "Data", "aligned_multimodal_rows.csv")  # must exist
-ROBERTA_PT  = os.path.join(PROJECT_ROOT, "data", "processed", "roberta_embeddings.pt")  # adjust if needed
-OUT_CSV     = os.path.join(PROJECT_ROOT, "Data", "final_training_data.csv")
+DATA_CSV   = os.path.join(PROJECT_ROOT, "Data", "Final_Ready_Dataset.csv")
+SCORES_CSV = os.path.join(PROJECT_ROOT, "Data", "vae_recon_scores.csv")
+ROBERTA_PT = os.path.join(PROJECT_ROOT, "Data", "Processed", "roberta_embeddings.pt")
+OUT_CSV    = os.path.join(PROJECT_ROOT, "Data", "final_training_data.csv")
 
-# ---------- LOAD ----------
+# ================= COLUMN NAMES =================
+ID_COL    = "display_id"
+LABEL_COL = "label"
+VIEWS_COL = "view_count"
+LIKES_COL = "like_count"
+
+# ================= LOAD FILES =================
+df = pd.read_csv(DATA_CSV)
 scores = pd.read_csv(SCORES_CSV)
-df = pd.read_csv(ALIGNED_CSV)
+text_emb = torch.load(ROBERTA_PT, map_location="cpu")
 
-# Ensure IDs are strings
+df[ID_COL] = df[ID_COL].astype(str)
 scores["video_id"] = scores["video_id"].astype(str)
-df["display_id"] = df["display_id"].astype(str)
 
-# ---------- 1) MAX score per video ----------
+print("CSV rows:", len(df))
+print("RoBERTa:", tuple(text_emb.shape))
+print("Score rows:", len(scores))
+
+# ================= VALIDATION =================
+if text_emb.shape[0] != len(df):
+    raise ValueError(
+        f"RoBERTa rows ({text_emb.shape[0]}) != CSV rows ({len(df)})"
+    )
+
+# ================= AGGREGATE VISUAL SCORES =================
 max_scores = (
     scores.groupby("video_id")["recon_error"]
     .max()
     .reset_index()
-    .rename(columns={"video_id": "display_id", "recon_error": "max_visual_score"})
+    .rename(columns={"video_id": ID_COL, "recon_error": "max_visual_score"})
 )
 
-# ---------- 2) Merge onto aligned rows ----------
-merged = df.merge(max_scores, on="display_id", how="inner")
-print("Rows after merge (should be ~4100):", len(merged))
+# ================= MERGE =================
+df_reset = df.reset_index().rename(columns={"index": "orig_idx"})
+merged = df_reset.merge(max_scores, on=ID_COL, how="inner")
 
-# ---------- 3) Add RoBERTa vectors aligned by row_index ----------
-text_emb = torch.load(ROBERTA_PT)  # [6000,768] or [4100,768]
+print("Rows with visual score:", len(merged))
 
-if "row_index" not in merged.columns:
-    raise ValueError("aligned_multimodal_rows.csv must contain 'row_index' column to align embeddings correctly.")
+# ================= CREATE META =================
+meta = merged[[ID_COL, VIEWS_COL, LIKES_COL, "max_visual_score", LABEL_COL, "category", "orig_idx"]].copy()
 
-idx = merged["row_index"].astype(int).tolist()
-text_keep = text_emb[idx].cpu().numpy()  # [N, 768]
 
-# ---------- 4) Keep meta fields ----------
-# Make sure view_count/like_count are numeric
-for col in ["view_count", "like_count"]:
-    if col in merged.columns:
-        merged[col] = pd.to_numeric(merged[col], errors="coerce").fillna(0)
+# ================= FIX LABELS (STRING → INT) =================
+# normalize label text
+meta[LABEL_COL] = meta[LABEL_COL].astype(str).str.strip().str.lower()
 
-LABEL_COL = "relevance"  # change ONLY if your label column has a different name
+label_map = {
+    "1": 1, "begin": 1, "benign": 1, "safe": 1,
+    "2": 2, "borderline": 2, "marginal": 2,
+    "3": 3, "malicious": 3, "inappropriate": 3
+}
 
-if LABEL_COL not in merged.columns:
-    raise ValueError(f"Label column '{LABEL_COL}' not found in aligned_multimodal_rows.csv")
+meta[LABEL_COL] = meta[LABEL_COL].map(label_map)
 
-meta_cols = [
-    "display_id",
-    "view_count",
-    "like_count",
-    "max_visual_score",
-    LABEL_COL
-]
+before = len(meta)
+meta = meta.dropna(subset=[LABEL_COL, "max_visual_score"]).copy()
+print("Dropped invalid rows:", before - len(meta))
 
-meta = merged[meta_cols].reset_index(drop=True)
+meta[LABEL_COL] = meta[LABEL_COL].astype(int)
 
-# ---------- 5) Flatten RoBERTa vectors into columns ----------
+# ================= ALIGN ROBERTA =================
+orig_idx = meta["orig_idx"].astype(int).tolist()
+
+text_keep = text_emb[orig_idx].numpy()
+
 roberta_cols = [f"r{i}" for i in range(text_keep.shape[1])]
 roberta_df = pd.DataFrame(text_keep, columns=roberta_cols)
 
+# ================= FINAL =================
+meta = meta.drop(columns=["orig_idx"]).reset_index(drop=True)
+roberta_df = roberta_df.reset_index(drop=True)
+
 final = pd.concat([meta, roberta_df], axis=1)
 
-# ---------- SAVE ----------
+# ================= SAVE =================
 os.makedirs(os.path.dirname(OUT_CSV), exist_ok=True)
 final.to_csv(OUT_CSV, index=False)
 

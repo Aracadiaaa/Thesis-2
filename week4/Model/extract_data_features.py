@@ -1,71 +1,78 @@
+import os
 import torch
-from transformers import RobertaTokenizer, RobertaModel
 import pandas as pd
-import numpy as np
+from transformers import RobertaTokenizer, RobertaModel
 from tqdm import tqdm
 
-# ================== DEVICE ==================
+# ===== PATHS =====
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))          # week4/Model
+PROJECT_ROOT = os.path.abspath(os.path.join(BASE_DIR, ".."))   # week4
+
+CSV_PATH = os.path.join(PROJECT_ROOT, "Data", "Final_Ready_Dataset.csv")  # <-- change if new csv name
+OUT_DIR = os.path.join(PROJECT_ROOT, "data", "processed")
+os.makedirs(OUT_DIR, exist_ok=True)
+
+OUT_PT  = os.path.join(OUT_DIR, "roberta_embeddings.pt")
+OUT_NPY = os.path.join(OUT_DIR, "roberta_embeddings.npy")
+OUT_IDS = os.path.join(OUT_DIR, "roberta_video_ids.csv")
+
+# ===== SETTINGS =====
+ID_COL = "display_id"       # <-- must exist in your CSV
+MAX_LEN = 128
+BATCH_SIZE = 32
+
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print("Using device:", device)
 
-# ================== LOAD MODEL ==================
 tokenizer = RobertaTokenizer.from_pretrained("roberta-base")
-model = RobertaModel.from_pretrained("roberta-base")
-model.to(device)
+model = RobertaModel.from_pretrained("roberta-base").to(device)
 model.eval()
 
-# ================== EMBEDDING FUNCTION ==================
-def extract_embeddings_batched(texts, batch_size=16, max_len=128):
-    """
-    texts: list of strings
-    returns: torch.Tensor of shape (N, 768)
-    """
-    all_embeddings = []
+# ===== LOAD DATA =====
+df = pd.read_csv(CSV_PATH)
+print("CSV rows:", len(df))
 
-    for i in tqdm(range(0, len(texts), batch_size), desc="Extracting RoBERTa embeddings"):
-        batch_texts = texts[i:i + batch_size]
+# Make sure ID exists
+if ID_COL not in df.columns:
+    raise ValueError(f"Missing ID column '{ID_COL}' in CSV")
 
-        encoded = tokenizer(
-            batch_texts,
-            padding=True,
-            truncation=True,
-            max_length=max_len,
-            return_tensors="pt"
-        )
+df[ID_COL] = df[ID_COL].astype(str)
 
-        encoded = {k: v.to(device) for k, v in encoded.items()}
+# Build text input
+texts = (df["title"].fillna("") + " " + df["description"].fillna("")).tolist()
 
-        with torch.no_grad():
-            outputs = model(**encoded)
-            # CLS token embedding
-            batch_embeddings = outputs.last_hidden_state[:, 0, :]
+# ===== EMBEDDING EXTRACTION (BATCHED) =====
+all_embeddings = []
 
-        all_embeddings.append(batch_embeddings.cpu())
+for i in tqdm(range(0, len(texts), BATCH_SIZE), desc="Extracting RoBERTa"):
+    batch_texts = texts[i:i+BATCH_SIZE]
+    encoded = tokenizer(
+        batch_texts,
+        padding=True,
+        truncation=True,
+        max_length=MAX_LEN,
+        return_tensors="pt"
+    )
+    encoded = {k: v.to(device) for k, v in encoded.items()}
 
-    return torch.cat(all_embeddings, dim=0)
+    with torch.no_grad():
+        outputs = model(**encoded)
+        emb = outputs.last_hidden_state[:, 0, :]  # CLS token [batch,768]
 
-# ================== LOAD DATA ==================
-df = pd.read_csv("Data/Master_Dataset.csv")
-print("Total rows in CSV:", len(df))
+    all_embeddings.append(emb.cpu())
 
-texts = (
-    df["title"].fillna("") + " " +
-    df["description"].fillna("")
-).tolist()
-
-# ================== EXTRACT ==================
-embeddings = extract_embeddings_batched(
-    texts,
-    batch_size=16,   # safe default (use 32 if GPU has enough VRAM)
-    max_len=128
-)
-
-# ================== SAVE ==================
+embeddings = torch.cat(all_embeddings, dim=0)
 print("Final embedding shape:", embeddings.shape)
 
-np.save("data/processed/roberta_embeddings.npy", embeddings.numpy())
-torch.save(embeddings, "data/processed/roberta_embeddings.pt")
+# ===== SAVE =====
+torch.save(embeddings, r"week4/Data/Processed/roberta_embeddings.pt")
+
+df[["display_id"]].to_csv(
+    r"week4/Data/Processed/roberta_video_ids.csv",
+    index=False
+)
 
 print("✅ Saved:")
-print("- data/processed/roberta_embeddings.npy")
-print("- data/processed/roberta_embeddings.pt")
+print("-", OUT_PT)
+print("-", OUT_NPY)
+print("-", OUT_IDS)

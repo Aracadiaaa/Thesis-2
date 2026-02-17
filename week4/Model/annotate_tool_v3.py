@@ -7,8 +7,8 @@ import ast # To safely parse the tags string
 
 # --- CONFIGURATION ---
 # EACH MEMBER MUST CHANGE THIS to their assigned file
-INPUT_CSV = "jon_data.csv" 
-IMAGE_DIR = "dataset_images"
+INPUT_CSV = "week4\Data\jon_data.csv" 
+IMAGE_DIR = "week4\Data\dataset_images"
 OUTPUT_CSV = "labeled_dataset.csv"
 
 # --- GUIDELINES FROM THESIS PDF ---
