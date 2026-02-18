@@ -1,83 +1,60 @@
 import os
-import sys
 import torch
 import pandas as pd
 from torchvision import datasets, transforms
 from torch.utils.data import DataLoader
 import torch.nn.functional as F
-from vae_model import ConvVAE  # your VAE class
-from torch.utils.data import Dataset
-from PIL import Image
-import glob
 
-# ================= PATH SETUP =================
-IMG_ROOT = r"C:\Users\JC\Desktop\Thesis\week4\Data\Images"
-MODEL_PATH = r"week4\vae_trained.pth"
-OUT_CSV = r"week4/Data/vae_recon_scores.csv"
+from vae_model import ConvVAE
 
-print("Using IMG_ROOT:", IMG_ROOT)
-print("Exists?", os.path.exists(IMG_ROOT))
-# ============================================
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.abspath(os.path.join(BASE_DIR, ".."))
 
-# -------- settings --------
+IMG_ROOT   = os.path.join(PROJECT_ROOT, "Data", "Classified_Dataset")   # contains Begin/Borderline/Malicious
+MODEL_PATH = os.path.join(PROJECT_ROOT, "models", "vae_v1.pth")
+OUT_CSV    = os.path.join(PROJECT_ROOT, "Data", "vae_recon_scores.csv")
+
 BATCH_SIZE = 32
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-transform = transforms.Compose([
-    transforms.ToTensor(),  # assumes images already 224x224
-])
-class FlatImageDataset(Dataset):
-    def __init__(self, root, transform=None):
-        self.paths = glob.glob(os.path.join(root, "*.jpg"))
-        self.transform = transform
+transform = transforms.Compose([transforms.ToTensor()])
 
-    def __len__(self):
-        return len(self.paths)
-
-    def __getitem__(self, idx):
-        path = self.paths[idx]
-        img = Image.open(path).convert("RGB")
-
-        if self.transform:
-            img = self.transform(img)
-
-        return img, path
-
-
-dataset = FlatImageDataset(IMG_ROOT, transform)
+dataset = datasets.ImageFolder(root=IMG_ROOT, transform=transform)
 loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=0)
 
-
-# Get file paths in exact order as ImageFolder outputs
-all_paths = dataset.paths
+all_paths = [p for (p, _) in dataset.samples]
 
 model = ConvVAE().to(DEVICE)
-state = torch.load(MODEL_PATH, map_location=DEVICE)
-model.load_state_dict(state)
+model.load_state_dict(torch.load(MODEL_PATH, map_location=DEVICE))
 model.eval()
 
+def normalize_frame(ft: str) -> str:
+    ft = ft.lower().strip()
+    if ft in ["thumbnnails", "thumbnail", "thumbnails", "thumb"]:
+        return "thumb"
+    return ft
+
 rows = []
+idx = 0
 with torch.no_grad():
-    idx = 0
     for imgs, _ in loader:
         imgs = imgs.to(DEVICE)
         recon, mu, logvar = model(imgs)
 
-        # per-image reconstruction error (MSE over pixels)
-        # reduction none -> mean over C,H,W
-        per_img = F.mse_loss(recon, imgs, reduction="none")
-        per_img = per_img.mean(dim=(1,2,3)).detach().cpu().numpy()
+        per_img = F.mse_loss(recon, imgs, reduction="none").mean(dim=(1,2,3)).detach().cpu().numpy()
 
         for s in per_img:
             img_path = all_paths[idx]
             img_name = os.path.basename(img_path)
             base = os.path.splitext(img_name)[0]
 
-            # parse video_id + frame_type from videoID_start.jpg
+            # parse: videoID_start / videoID_mid / videoID_end / videoID_thumbnnails
             if "_" in base:
                 video_id, frame_type = base.rsplit("_", 1)
             else:
                 video_id, frame_type = base, "unknown"
+
+            frame_type = normalize_frame(frame_type)
 
             rows.append({
                 "image_path": img_path,
@@ -89,9 +66,10 @@ with torch.no_grad():
             idx += 1
 
 df = pd.DataFrame(rows)
+os.makedirs(os.path.dirname(OUT_CSV), exist_ok=True)
 df.to_csv(OUT_CSV, index=False)
+
 print("✅ Saved:", OUT_CSV)
-print(df.head())
 print("Total images scored:", len(df))
-print("Using IMG_ROOT:", IMG_ROOT)
-print("Exists?", os.path.exists(IMG_ROOT))
+print(df["frame_type"].value_counts().head(10))
+print("Classes found:", dataset.classes)
