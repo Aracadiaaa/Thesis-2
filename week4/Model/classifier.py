@@ -1,4 +1,5 @@
 import os
+import joblib
 import pandas as pd
 from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestClassifier
@@ -6,8 +7,11 @@ from sklearn.metrics import accuracy_score, classification_report, confusion_mat
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.abspath(os.path.join(BASE_DIR, ".."))
+os.makedirs(os.path.join(PROJECT_ROOT, "models"), exist_ok=True)
 
 DATA = os.path.join(PROJECT_ROOT, "Data", "final_training_data.csv")
+
+MODEL_PKL = os.path.join(PROJECT_ROOT, "models", "rf_model.pkl")
 
 df = pd.read_csv(DATA)
 
@@ -62,3 +66,8 @@ for n in [100, 200, 500]:
     print("Accuracy:", acc)
     print("Confusion Matrix:\n", confusion_matrix(y_test, preds))
     print(classification_report(y_test, preds))
+
+
+# Save BOTH model + feature columns
+joblib.dump({"model": clf, "feature_cols": X_train.columns.tolist()}, MODEL_PKL)
+print("✅ Saved model bundle:", MODEL_PKL)
